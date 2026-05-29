@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Environments and notebooks
+.venv/
+venv/
+.ipynb_checkpoints/
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+
+# Large local artifacts
+codes/VGG_BatchNorm/data/cifar-10-batches-py/
+codes/VGG_BatchNorm/data/cifar-10-python.tar.gz
+codes/VGG_BatchNorm/outputs/
+model_weights_for_upload/
+EXPERIMENT_NOTES.md
+project_2_2026_compiled.pdf
+
+# Build artifacts
+*.aux
+*.bbl
+*.blg
+*.fdb_latexmk
+*.fls
+*.log
+*.out
+*.synctex.gz
+*.toc
