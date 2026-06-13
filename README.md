@@ -15,15 +15,11 @@ Course project for CIFAR-10 classification and Batch Normalization analysis.
 - Optimizer comparison with `SGD`, `SGD with momentum`, and `Adam`
 - Loss-landscape and gradient-diagnostics analysis for BN
 - Additional ablations on model width, activation functions, and loss/regularization
-- Final report written in standalone LaTeX under `report_tex/`
 
 ## Main Files
 
-- `report_tex/project_2_2026.tex`: main report source
-- `report_tex/project_2_2026.pdf`: compiled report
 - `codes/VGG_BatchNorm/models/vgg.py`: model definitions
 - `codes/VGG_BatchNorm/VGG_Loss_Landscape.py`: experiment runner
-- `report_tex/figures/requirement_ablations.png`: ablation summary figure
 
 ## Quick Start
 
@@ -49,13 +45,6 @@ Run the final full-data training with resumable checkpoints:
 
 ```bash
 python codes/VGG_BatchNorm/VGG_Loss_Landscape.py --mode optimizers --epochs 40 --batch-size 128 --train-subset -1 --val-subset -1 --optimizer-models vgg_a vgg_a_bn --optimizers adam --optimizer-lr 0.0001 --resume
-```
-
-Compile the LaTeX report:
-
-```bash
-cd report_tex
-latexmk -pdf -interaction=nonstopmode project_2_2026.tex
 ```
 
 Generated figures, metrics, and checkpoints are written to `codes/VGG_BatchNorm/outputs/`.

@@ -22,6 +22,7 @@ EXPERIMENT_NOTES.md
 project_2_2026_compiled.pdf
 project_2_2026.lyx
 pic/
+report_tex/
 
 # Build artifacts
 *.aux
@@ -33,6 +34,3 @@ pic/
 *.out
 *.synctex.gz
 *.toc
-
-# Report sources no longer used
-report_tex/bib.bib
