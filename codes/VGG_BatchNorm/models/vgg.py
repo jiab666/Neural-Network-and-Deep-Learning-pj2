@@ -1,75 +1,107 @@
 """
-VGG
+VGG models for CIFAR-10 experiments.
 """
 import numpy as np
 from torch import nn
 
 from utils.nn import init_weights_
 
-# ## Models implementation
+
 def get_number_of_parameters(model):
     parameters_n = 0
     for parameter in model.parameters():
         parameters_n += np.prod(parameter.shape).item()
-
     return parameters_n
 
 
-class VGG_A(nn.Module):
-    """VGG_A model
+def build_activation(name, inplace=True):
+    if name == "relu":
+        return nn.ReLU(inplace=inplace)
+    if name == "leaky_relu":
+        return nn.LeakyReLU(negative_slope=0.1, inplace=inplace)
+    if name == "elu":
+        return nn.ELU(alpha=1.0, inplace=inplace)
+    raise ValueError(f"Unsupported activation: {name}")
 
-    size of Linear layers is smaller since input assumed to be 32x32x3, instead of
-    224x224x3
-    """
 
-    def __init__(self, inp_ch=3, num_classes=10, init_weights=True):
+def scale_channel(value, width_multiplier):
+    scaled = int(round(value * width_multiplier))
+    return max(8, scaled)
+
+
+class ConfigurableVGG_A(nn.Module):
+    """Configurable VGG-A backbone for CIFAR-10."""
+
+    def __init__(
+        self,
+        inp_ch=3,
+        num_classes=10,
+        init_weights=True,
+        use_batch_norm=False,
+        dropout_p=0.0,
+        activation_name="relu",
+        width_multiplier=1.0,
+        hidden_dim=None,
+    ):
         super().__init__()
 
+        channels = [scale_channel(base, width_multiplier) for base in [64, 128, 256, 512, 512]]
+        hidden_dim = hidden_dim or channels[-1]
+
+        self.output_dim = channels[-1]
+        self.activation_name = activation_name
+        self.width_multiplier = width_multiplier
+        self.hidden_dim = hidden_dim
+        self.use_batch_norm = use_batch_norm
+        self.dropout_p = dropout_p
+
         self.features = nn.Sequential(
-            # stage 1
-            nn.Conv2d(in_channels=inp_ch, out_channels=64, kernel_size=3, padding=1),
-            nn.ReLU(True),
+            *self._make_stage(inp_ch, channels[0], convs=1, use_batch_norm=use_batch_norm, activation_name=activation_name),
             nn.MaxPool2d(kernel_size=2, stride=2),
-
-            # stage 2
-            nn.Conv2d(in_channels=64, out_channels=128, kernel_size=3, padding=1),
-            nn.ReLU(True),
+            *self._make_stage(channels[0], channels[1], convs=1, use_batch_norm=use_batch_norm, activation_name=activation_name),
             nn.MaxPool2d(kernel_size=2, stride=2),
-
-            # stage 3
-            nn.Conv2d(in_channels=128, out_channels=256, kernel_size=3, padding=1),
-            nn.ReLU(True),
-            nn.Conv2d(in_channels=256, out_channels=256, kernel_size=3, padding=1),
-            nn.ReLU(True),
+            *self._make_stage(channels[1], channels[2], convs=2, use_batch_norm=use_batch_norm, activation_name=activation_name),
             nn.MaxPool2d(kernel_size=2, stride=2),
-
-            # stage 4
-            nn.Conv2d(in_channels=256, out_channels=512, kernel_size=3, padding=1),
-            nn.ReLU(True),
-            nn.Conv2d(in_channels=512, out_channels=512, kernel_size=3, padding=1),
-            nn.ReLU(True),
+            *self._make_stage(channels[2], channels[3], convs=2, use_batch_norm=use_batch_norm, activation_name=activation_name),
             nn.MaxPool2d(kernel_size=2, stride=2),
+            *self._make_stage(channels[3], channels[4], convs=2, use_batch_norm=use_batch_norm, activation_name=activation_name),
+            nn.MaxPool2d(kernel_size=2, stride=2),
+        )
 
-            # stage5
-            nn.Conv2d(in_channels=512, out_channels=512, kernel_size=3, padding=1),
-            nn.ReLU(True),
-            nn.Conv2d(in_channels=512, out_channels=512, kernel_size=3, padding=1),
-            nn.ReLU(True),
-            nn.MaxPool2d(kernel_size=2, stride=2))
-
-        self.classifier = nn.Sequential(
-            nn.Linear(512 * 1 * 1, 512),
-            nn.ReLU(),
-            nn.Linear(512, 512),
-            nn.ReLU(),
-            nn.Linear(512, num_classes))
+        classifier_layers = []
+        if dropout_p > 0.0:
+            classifier_layers.append(nn.Dropout(p=dropout_p))
+        classifier_layers.append(nn.Linear(self.output_dim, hidden_dim))
+        if use_batch_norm:
+            classifier_layers.append(nn.BatchNorm1d(hidden_dim))
+        classifier_layers.append(build_activation(activation_name, inplace=True))
+        if dropout_p > 0.0:
+            classifier_layers.append(nn.Dropout(p=dropout_p))
+        classifier_layers.append(nn.Linear(hidden_dim, hidden_dim))
+        if use_batch_norm:
+            classifier_layers.append(nn.BatchNorm1d(hidden_dim))
+        classifier_layers.append(build_activation(activation_name, inplace=True))
+        classifier_layers.append(nn.Linear(hidden_dim, num_classes))
+        self.classifier = nn.Sequential(*classifier_layers)
 
         if init_weights:
             self._init_weights()
 
+    @staticmethod
+    def _make_stage(in_channels, out_channels, convs, use_batch_norm, activation_name):
+        layers = []
+        current_in = in_channels
+        for _ in range(convs):
+            layers.append(nn.Conv2d(in_channels=current_in, out_channels=out_channels, kernel_size=3, padding=1))
+            if use_batch_norm:
+                layers.append(nn.BatchNorm2d(out_channels))
+            layers.append(build_activation(activation_name, inplace=True))
+            current_in = out_channels
+        return layers
+
     def forward(self, x):
         x = self.features(x)
-        x = self.classifier(x.view(-1, 512 * 1 * 1))
+        x = self.classifier(x.view(-1, self.output_dim))
         return x
 
     def _init_weights(self):
@@ -77,180 +109,96 @@ class VGG_A(nn.Module):
             init_weights_(m)
 
 
-class VGG_A_BatchNorm(nn.Module):
-    """VGG-A with BatchNorm layers after each convolution and hidden linear."""
+class VGG_A(ConfigurableVGG_A):
+    """Plain VGG-A baseline."""
+
+    def __init__(
+        self,
+        inp_ch=3,
+        num_classes=10,
+        init_weights=True,
+        activation_name="relu",
+        width_multiplier=1.0,
+        hidden_dim=None,
+    ):
+        super().__init__(
+            inp_ch=inp_ch,
+            num_classes=num_classes,
+            init_weights=init_weights,
+            use_batch_norm=False,
+            dropout_p=0.0,
+            activation_name=activation_name,
+            width_multiplier=width_multiplier,
+            hidden_dim=hidden_dim,
+        )
+
+
+class VGG_A_BatchNorm(ConfigurableVGG_A):
+    """VGG-A with BatchNorm layers."""
+
+    def __init__(
+        self,
+        inp_ch=3,
+        num_classes=10,
+        init_weights=True,
+        activation_name="relu",
+        width_multiplier=1.0,
+        hidden_dim=None,
+    ):
+        super().__init__(
+            inp_ch=inp_ch,
+            num_classes=num_classes,
+            init_weights=init_weights,
+            use_batch_norm=True,
+            dropout_p=0.0,
+            activation_name=activation_name,
+            width_multiplier=width_multiplier,
+            hidden_dim=hidden_dim,
+        )
+
+
+class VGG_A_Dropout(ConfigurableVGG_A):
+    """VGG-A with Dropout in the classifier."""
+
+    def __init__(
+        self,
+        inp_ch=3,
+        num_classes=10,
+        init_weights=True,
+        activation_name="relu",
+        width_multiplier=1.0,
+        hidden_dim=None,
+        dropout_p=0.5,
+    ):
+        super().__init__(
+            inp_ch=inp_ch,
+            num_classes=num_classes,
+            init_weights=init_weights,
+            use_batch_norm=False,
+            dropout_p=dropout_p,
+            activation_name=activation_name,
+            width_multiplier=width_multiplier,
+            hidden_dim=hidden_dim,
+        )
+
+
+class VGG_A_Light(ConfigurableVGG_A):
+    """Smaller VGG-A variant kept for convenience."""
 
     def __init__(self, inp_ch=3, num_classes=10, init_weights=True):
-        super().__init__()
-
-        self.features = nn.Sequential(
-            # stage 1
-            nn.Conv2d(in_channels=inp_ch, out_channels=64, kernel_size=3, padding=1),
-            nn.BatchNorm2d(64),
-            nn.ReLU(True),
-            nn.MaxPool2d(kernel_size=2, stride=2),
-
-            # stage 2
-            nn.Conv2d(in_channels=64, out_channels=128, kernel_size=3, padding=1),
-            nn.BatchNorm2d(128),
-            nn.ReLU(True),
-            nn.MaxPool2d(kernel_size=2, stride=2),
-
-            # stage 3
-            nn.Conv2d(in_channels=128, out_channels=256, kernel_size=3, padding=1),
-            nn.BatchNorm2d(256),
-            nn.ReLU(True),
-            nn.Conv2d(in_channels=256, out_channels=256, kernel_size=3, padding=1),
-            nn.BatchNorm2d(256),
-            nn.ReLU(True),
-            nn.MaxPool2d(kernel_size=2, stride=2),
-
-            # stage 4
-            nn.Conv2d(in_channels=256, out_channels=512, kernel_size=3, padding=1),
-            nn.BatchNorm2d(512),
-            nn.ReLU(True),
-            nn.Conv2d(in_channels=512, out_channels=512, kernel_size=3, padding=1),
-            nn.BatchNorm2d(512),
-            nn.ReLU(True),
-            nn.MaxPool2d(kernel_size=2, stride=2),
-
-            # stage 5
-            nn.Conv2d(in_channels=512, out_channels=512, kernel_size=3, padding=1),
-            nn.BatchNorm2d(512),
-            nn.ReLU(True),
-            nn.Conv2d(in_channels=512, out_channels=512, kernel_size=3, padding=1),
-            nn.BatchNorm2d(512),
-            nn.ReLU(True),
-            nn.MaxPool2d(kernel_size=2, stride=2),
+        super().__init__(
+            inp_ch=inp_ch,
+            num_classes=num_classes,
+            init_weights=init_weights,
+            use_batch_norm=False,
+            dropout_p=0.0,
+            activation_name="relu",
+            width_multiplier=0.25,
+            hidden_dim=128,
         )
 
-        self.classifier = nn.Sequential(
-            nn.Linear(512 * 1 * 1, 512),
-            nn.BatchNorm1d(512),
-            nn.ReLU(True),
-            nn.Linear(512, 512),
-            nn.BatchNorm1d(512),
-            nn.ReLU(True),
-            nn.Linear(512, num_classes),
-        )
 
-        if init_weights:
-            self._init_weights()
-
-    def forward(self, x):
-        x = self.features(x)
-        x = self.classifier(x.view(-1, 512 * 1 * 1))
-        return x
-
-    def _init_weights(self):
-        for m in self.modules():
-            init_weights_(m)
-
-
-class VGG_A_Light(nn.Module):
-    def __init__(self, inp_ch=3, num_classes=10):
-        super().__init__()
-
-        self.stage1 = nn.Sequential(
-            nn.Conv2d(in_channels=inp_ch, out_channels=16, kernel_size=3, padding=1),
-            nn.ReLU(),
-            nn.MaxPool2d(kernel_size=2, stride=2))
-
-        self.stage2 = nn.Sequential(
-            nn.Conv2d(in_channels=16, out_channels=32, kernel_size=3, padding=1),
-            nn.ReLU(),
-            nn.MaxPool2d(kernel_size=2, stride=2))
-        '''
-        self.stage3 = nn.Sequential(
-            nn.Conv2d(in_channels=32, out_channels=64, kernel_size=3, padding=1),
-            nn.Conv2d(in_channels=64, out_channels=64, kernel_size=3, padding=1),
-            nn.ReLU(),
-            nn.MaxPool2d(kernel_size=2, stride=2))
-
-        self.stage4 = nn.Sequential(
-            nn.Conv2d(in_channels=64, out_channels=128, kernel_size=3, padding=1),
-            nn.Conv2d(in_channels=128, out_channels=128, kernel_size=3, padding=1),
-            nn.ReLU(),
-            nn.MaxPool2d(kernel_size=2, stride=2))
-
-        self.stage5 = nn.Sequential(
-            nn.Conv2d(in_channels=512, out_channels=512, kernel_size=3, padding=1),
-            nn.Conv2d(in_channels=512, out_channels=512, kernel_size=3, padding=1),
-            nn.ReLU(),
-            nn.MaxPool2d(kernel_size=2, stride=2))
-        '''
-        self.classifier = nn.Sequential(
-            nn.Linear(32 * 8 * 8, 128),
-            nn.ReLU(),
-            nn.Linear(128, 128),
-            nn.ReLU(),
-            nn.Linear(128, num_classes))
-
-    def forward(self, x):
-        x = self.stage1(x)
-        x = self.stage2(x)
-        # x = self.stage3(x)
-        # x = self.stage4(x)
-        # x = self.stage5(x)
-        x = self.classifier(x.view(-1, 32 * 8 * 8))
-        return x
-
-
-class VGG_A_Dropout(nn.Module):
-    def __init__(self, inp_ch=3, num_classes=10):
-        super().__init__()
-
-        self.stage1 = nn.Sequential(
-            nn.Conv2d(in_channels=inp_ch, out_channels=64, kernel_size=3, padding=1),
-            nn.ReLU(True),
-            nn.MaxPool2d(kernel_size=2, stride=2))
-
-        self.stage2 = nn.Sequential(
-            nn.Conv2d(in_channels=64, out_channels=128, kernel_size=3, padding=1),
-            nn.ReLU(True),
-            nn.MaxPool2d(kernel_size=2, stride=2))
-
-        self.stage3 = nn.Sequential(
-            nn.Conv2d(in_channels=128, out_channels=256, kernel_size=3, padding=1),
-            nn.ReLU(True),
-            nn.Conv2d(in_channels=256, out_channels=256, kernel_size=3, padding=1),
-            nn.ReLU(True),
-            nn.MaxPool2d(kernel_size=2, stride=2))
-
-        self.stage4 = nn.Sequential(
-            nn.Conv2d(in_channels=256, out_channels=512, kernel_size=3, padding=1),
-            nn.ReLU(True),
-            nn.Conv2d(in_channels=512, out_channels=512, kernel_size=3, padding=1),
-            nn.ReLU(True),
-            nn.MaxPool2d(kernel_size=2, stride=2))
-
-        self.stage5 = nn.Sequential(
-            nn.Conv2d(in_channels=512, out_channels=512, kernel_size=3, padding=1),
-            nn.ReLU(True),
-            nn.Conv2d(in_channels=512, out_channels=512, kernel_size=3, padding=1),
-            nn.ReLU(True),
-            nn.MaxPool2d(kernel_size=2, stride=2))
-
-        self.classifier = nn.Sequential(
-            nn.Dropout(),
-            nn.Linear(512 * 1 * 1, 512),
-            nn.ReLU(True),
-            nn.Dropout(),
-            nn.Linear(512, 512),
-            nn.ReLU(True),
-            nn.Linear(512, num_classes))
-
-    def forward(self, x):
-        x = self.stage1(x)
-        x = self.stage2(x)
-        x = self.stage3(x)
-        x = self.stage4(x)
-        x = self.stage5(x)
-        x = self.classifier(x.view(-1, 512 * 1 * 1))
-        return x
-
-
-if __name__ == '__main__':
+if __name__ == "__main__":
     print(get_number_of_parameters(VGG_A()))
     print(get_number_of_parameters(VGG_A_BatchNorm()))
     print(get_number_of_parameters(VGG_A_Light()))

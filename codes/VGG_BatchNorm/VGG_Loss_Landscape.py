@@ -13,6 +13,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from torch import nn
+from torch.nn import functional as F
 from tqdm import tqdm
 
 from data.loaders import get_cifar_loader
@@ -31,6 +32,20 @@ MODEL_FACTORY = {
     "vgg_a_bn": VGG_A_BatchNorm,
     "vgg_a_dropout": VGG_A_Dropout,
 }
+
+
+class FocalLoss(nn.Module):
+    def __init__(self, gamma=2.0):
+        super().__init__()
+        self.gamma = gamma
+
+    def forward(self, logits, target):
+        log_probs = F.log_softmax(logits, dim=1)
+        probs = log_probs.exp()
+        target_log_probs = log_probs.gather(1, target.unsqueeze(1)).squeeze(1)
+        target_probs = probs.gather(1, target.unsqueeze(1)).squeeze(1)
+        loss = -((1.0 - target_probs) ** self.gamma) * target_log_probs
+        return loss.mean()
 
 
 def ensure_dirs():
@@ -59,7 +74,7 @@ def get_optimizer(name, parameters, lr, weight_decay=0.0):
     if name == "sgd_momentum":
         return torch.optim.SGD(parameters, lr=lr, momentum=0.9, weight_decay=weight_decay)
     if name == "adam":
-        return torch.optim.Adam(parameters, lr=lr, weight_decay=weight_decay)
+        return torch.optim.Adam(parameters, lr=lr, weight_decay=weight_decay, foreach=False)
     raise ValueError(f"Unsupported optimizer: {name}")
 
 
@@ -72,10 +87,35 @@ def format_subset_tag(value):
 def build_run_name(args, model_name, optimizer_name, lr):
     train_tag = format_subset_tag(args.train_subset)
     val_tag = format_subset_tag(args.val_subset)
+    hidden_dim = args.hidden_dim if args.hidden_dim and args.hidden_dim > 0 else "auto"
+    loss_tag = "ce" if args.loss_name == "cross_entropy" else args.loss_name
     return (
         f"{model_name}_{optimizer_name}_lr{lr:g}"
         f"_train{train_tag}_val{val_tag}_ep{args.epochs}"
+        f"_act{args.activation}"
+        f"_w{args.width_multiplier:g}_h{hidden_dim}"
+        f"_loss{loss_tag}_ls{args.label_smoothing:g}_wd{args.weight_decay:g}"
     )
+
+
+def create_model(model_name, args):
+    model_cls = MODEL_FACTORY[model_name]
+    model_kwargs = {
+        "activation_name": args.activation,
+        "width_multiplier": args.width_multiplier,
+        "hidden_dim": args.hidden_dim if args.hidden_dim and args.hidden_dim > 0 else None,
+    }
+    if model_name == "vgg_a_dropout":
+        model_kwargs["dropout_p"] = args.dropout_p
+    return model_cls(**model_kwargs)
+
+
+def create_criterion(args):
+    if args.loss_name == "cross_entropy":
+        return nn.CrossEntropyLoss(label_smoothing=args.label_smoothing)
+    if args.loss_name == "focal":
+        return FocalLoss(gamma=args.focal_gamma)
+    raise ValueError(f"Unsupported loss: {args.loss_name}")
 
 
 def save_training_state(state_path, state):
@@ -85,15 +125,28 @@ def save_training_state(state_path, state):
 def load_training_state(state_path, device):
     if not state_path.exists():
         return None
-    return torch.load(state_path, map_location=device)
+    return torch.load(state_path, map_location=device, weights_only=False)
 
 
-def build_summary(run_name, history, model_name, optimizer_name, lr, history_path, figure_path, checkpoint_path):
+def move_optimizer_state_to_device(optimizer, device):
+    for state in optimizer.state.values():
+        for key, value in state.items():
+            if torch.is_tensor(value):
+                state[key] = value.to(device)
+
+
+def build_summary(run_name, history, model_name, optimizer_name, lr, history_path, figure_path, checkpoint_path, args):
     return {
         "run_name": run_name,
         "model": model_name,
         "optimizer": optimizer_name,
         "lr": lr,
+        "activation": args.activation,
+        "width_multiplier": args.width_multiplier,
+        "hidden_dim": args.hidden_dim if args.hidden_dim and args.hidden_dim > 0 else None,
+        "loss_name": args.loss_name,
+        "label_smoothing": args.label_smoothing,
+        "weight_decay": args.weight_decay,
         "best_val_accuracy": max(history["val_accuracy"]),
         "final_val_accuracy": history["val_accuracy"][-1],
         "final_val_loss": history["val_loss"][-1],
@@ -390,13 +443,14 @@ def run_single_experiment(args, model_name, optimizer_name, lr):
                 history_path,
                 figure_path,
                 checkpoint_path,
+                args,
             )
             return existing_history, summary
 
     probe_batch = get_probe_batch(val_loader, device)
-    model = MODEL_FACTORY[model_name]()
+    model = create_model(model_name, args)
     optimizer = get_optimizer(optimizer_name, model.parameters(), lr=lr, weight_decay=args.weight_decay)
-    criterion = nn.CrossEntropyLoss()
+    criterion = create_criterion(args)
 
     history = None
     best_state = None
@@ -410,6 +464,7 @@ def run_single_experiment(args, model_name, optimizer_name, lr):
         if resume_state is not None:
             model.load_state_dict(resume_state["model_state_dict"])
             optimizer.load_state_dict(resume_state["optimizer_state_dict"])
+            move_optimizer_state_to_device(optimizer, device)
             history = resume_state.get("history")
             best_state = resume_state.get("best_state")
             best_val_accuracy = resume_state.get("best_val_accuracy", -1.0)
@@ -451,6 +506,7 @@ def run_single_experiment(args, model_name, optimizer_name, lr):
         history_path,
         figure_path,
         checkpoint_path,
+        args,
     )
     return history, summary
 
@@ -488,14 +544,82 @@ def run_optimizer_suite(args):
     return summaries
 
 
+def run_ablation_suites(args):
+    summaries = []
+
+    width_pairs = [
+        ("narrow", 0.5, 256),
+        ("baseline", 1.0, 512),
+        ("wide", 1.25, 640),
+    ]
+    activation_choices = ["relu", "leaky_relu", "elu"]
+    loss_settings = [
+        ("ce_plain", "cross_entropy", 0.0, 0.0),
+        ("ce_weight_decay", "cross_entropy", 0.0, 1e-3),
+        ("ce_label_smoothing", "cross_entropy", 0.1, 5e-4),
+        ("focal", "focal", 0.0, 5e-4),
+    ]
+
+    original_width = args.width_multiplier
+    original_hidden = args.hidden_dim
+    original_activation = args.activation
+    original_loss_name = args.loss_name
+    original_label_smoothing = args.label_smoothing
+    original_weight_decay = args.weight_decay
+
+    for _, width_multiplier, hidden_dim in width_pairs:
+        args.width_multiplier = width_multiplier
+        args.hidden_dim = hidden_dim
+        args.activation = "relu"
+        args.loss_name = "cross_entropy"
+        args.label_smoothing = 0.0
+        args.weight_decay = 5e-4
+        _, summary = run_single_experiment(args, "vgg_a", "adam", args.optimizer_lr)
+        summaries.append(summary)
+
+    args.width_multiplier = 1.0
+    args.hidden_dim = 512
+    for activation_name in activation_choices:
+        args.activation = activation_name
+        args.loss_name = "cross_entropy"
+        args.label_smoothing = 0.0
+        args.weight_decay = 5e-4
+        _, summary = run_single_experiment(args, "vgg_a", "adam", args.optimizer_lr)
+        summaries.append(summary)
+
+    args.activation = "relu"
+    for _, loss_name, label_smoothing, weight_decay in loss_settings:
+        args.loss_name = loss_name
+        args.label_smoothing = label_smoothing
+        args.weight_decay = weight_decay
+        _, summary = run_single_experiment(args, "vgg_a", "adam", args.optimizer_lr)
+        summaries.append(summary)
+
+    args.width_multiplier = original_width
+    args.hidden_dim = original_hidden
+    args.activation = original_activation
+    args.loss_name = original_loss_name
+    args.label_smoothing = original_label_smoothing
+    args.weight_decay = original_weight_decay
+
+    return summaries
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description="VGG-A / BN experiments on CIFAR-10")
-    parser.add_argument("--mode", nargs="+", default=["landscape"], choices=["landscape", "optimizers"])
+    parser.add_argument("--mode", nargs="+", default=["landscape"], choices=["landscape", "optimizers", "ablations"])
     parser.add_argument("--epochs", type=int, default=5)
     parser.add_argument("--batch-size", type=int, default=128)
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--seed", type=int, default=2026)
     parser.add_argument("--weight-decay", type=float, default=5e-4)
+    parser.add_argument("--loss-name", default="cross_entropy", choices=["cross_entropy", "focal"])
+    parser.add_argument("--label-smoothing", type=float, default=0.0)
+    parser.add_argument("--focal-gamma", type=float, default=2.0)
+    parser.add_argument("--activation", default="relu", choices=["relu", "leaky_relu", "elu"])
+    parser.add_argument("--width-multiplier", type=float, default=1.0)
+    parser.add_argument("--hidden-dim", type=int, default=0)
+    parser.add_argument("--dropout-p", type=float, default=0.5)
     parser.add_argument("--train-subset", type=int, default=2000)
     parser.add_argument("--val-subset", type=int, default=1000)
     parser.add_argument(
@@ -520,6 +644,8 @@ def main():
         run_landscape_suite(args)
     if "optimizers" in args.mode:
         run_optimizer_suite(args)
+    if "ablations" in args.mode:
+        run_ablation_suites(args)
     save_history({"runs": collect_metric_summaries(METRICS_DIR)}, METRICS_DIR / "experiment_summary.json")
 
 

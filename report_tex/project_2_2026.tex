@@ -8,107 +8,81 @@
 \usepackage{xcolor}
 \usepackage{float}
 \usepackage{array}
+\usepackage[UTF8]{ctex}
 
-\title{Project 2 of ``Neural Network and Deep Learning''\\
-\large CIFAR-10 Classification and Batch Normalization Analysis}
-\author{Changhao Jia \\ 23307140027}
+\title{《Neural Network and Deep Learning》Project 2\\
+\large CIFAR-10 分类与 Batch Normalization 分析}
+\author{贾昌昊 \\ 23307140027}
 \date{\today}
 
 \begin{document}
 \maketitle
+\sloppy
 
 \begin{abstract}
-This project studies CIFAR-10 image classification and the effect of Batch
-Normalization (BN) on optimization. We implement three VGG-style models in
-PyTorch: a plain VGG-A baseline, VGG-A with BN, and a VGG-A variant with
-Dropout. We compare optimizers and learning rates, run both subset-scale and
-full-data experiments, and visualize loss-landscape and gradient-stability
-behavior to analyze how BN affects training. In the final full-data training,
-plain VGG-A trained with Adam at learning rate $10^{-4}$ reaches the best test
-accuracy of $76.83\%$, while VGG-A with BN reaches $74.60\%$ under the same
-setting. Although BN does not produce the highest final full-data accuracy in
-our best tested configuration, it improves optimization stability in the
-smaller-scale experiments and produces smoother optimization diagnostics.
+本项目围绕 CIFAR-10 图像分类任务以及 Batch Normalization（BN）对优化过程的影响展开研究。我们使用 PyTorch 实现了三种 VGG 风格模型：基础版 VGG-A、加入 BN 的 VGG-A，以及加入 Dropout 的 VGG-A。实验中比较了不同优化器和学习率，并分别进行了小规模探索实验与全量数据训练，同时结合 loss landscape 与梯度诊断来分析 BN 对训练行为的影响。在此基础上，我们进一步研究了模型宽度、激活函数以及 loss/regularization 对性能的影响。最终全量训练中，使用 Adam 且学习率为 $10^{-4}$ 的普通 VGG-A 取得了最高 $76.83\%$ 的测试精度，对应 test error 为 $23.17\%$；相同设置下，VGG-A + BN 的最高测试精度为 $74.60\%$，对应 test error 为 $25.40\%$。因此，就本次作业的最终结果而言，加入 BN 并没有优于普通 VGG-A。
 \end{abstract}
 
-\section{Submission Information}
-\textbf{Name:} Changhao Jia
+\section{资源链接}
 
-\textbf{Student ID:} 23307140027
+\textbf{GitHub 仓库：} \url{https://github.com/jiab666/Neural-Network-and-Deep-Learning-pj2}
 
-\textbf{GitHub repository:} \url{https://github.com/jiab666/Neural-Network-and-Deep-Learning-pj2}
+\textbf{数据集链接：} \url{https://www.cs.toronto.edu/~kriz/cifar.html}
 
-\textbf{Dataset link:} \url{https://www.cs.toronto.edu/~kriz/cifar.html}
+\textbf{模型权重链接：} \url{https://drive.google.com/drive/folders/1x8BPofWcaTG0FGQ4PiEKDlDMwgU1n_vf?usp=drive_link}
 
-\textbf{Model weights link:} \url{https://drive.google.com/drive/folders/1x8BPofWcaTG0FGQ4PiEKDlDMwgU1n_vf?usp=drive_link}
+\section{引言}
+CIFAR-10 是图像分类中非常经典的基准数据集，包含 10 个类别共 60,000 张 $32 \times 32$ 的彩色图像。由于图像分辨率较低，它非常适合作为研究网络结构设计与优化行为的实验平台。本次项目的第一个目标是在 CIFAR-10 上训练一个包含卷积层、池化层、激活函数和全连接层的卷积神经网络；第二个目标是研究 Batch Normalization 对训练动态与优化过程的影响。
 
-\section{Introduction}
-CIFAR-10 is a standard benchmark for image classification and contains 60,000
-$32 \times 32$ color images from 10 categories \cite{krizhevsky2009learning}.
-Its low resolution makes it a practical testbed for studying model design and
-optimization. In this project, the first goal is to train a convolutional
-neural network that includes convolution, pooling, activation, and
-fully-connected layers. The second goal is to investigate how Batch
-Normalization affects training dynamics and optimization behavior.
+围绕这一目标，我们实现了 VGG 风格网络，并将 Batch Normalization 作为主要扩展组件，同时保留 Dropout 作为补充对比；此外还比较了 \texttt{torch.optim} 中的多种优化器，并对 loss landscape 与梯度变化进行可视化分析。随后我们进一步加入了不同宽度配置、不同激活函数以及不同 loss/regularization 的对比实验，使整个研究同时覆盖结构设计、优化策略和训练解释三个层面。
 
-To satisfy the project requirements, we implement a VGG-style architecture,
-include Batch Normalization as the main extension component, keep Dropout as an
-additional comparison, compare multiple optimizers from \texttt{torch.optim},
-and visualize the loss landscape and gradient behavior. The central question of
-this report is not only which model achieves the highest final accuracy, but
-also how BN changes training stability and sensitivity to optimization
-hyperparameters.
-
-\section{Dataset and Experimental Setup}
-\subsection{Dataset}
-We use CIFAR-10 \cite{krizhevsky2009learning}. The full dataset contains
-50,000 training images and 10,000 test images. During the exploratory stage,
-we also use a subset-scale setup with 5,000 training images and 1,000 test
-images for faster iteration and easier comparison of optimizers and learning
-rates.
-
-\subsection{Models}
-We implement three VGG-style models in
-\texttt{codes/VGG\_BatchNorm/models/vgg.py}:
+\section{数据集与实验设置}
+\subsection{数据集}
+本项目使用 CIFAR-10 数据集。完整数据集包含 50,000 张训练图像和 10,000 张测试图像。在正式全量训练之前，我们先用两级小规模实验完成方案比较，以提高迭代效率：
 \begin{itemize}
-    \item \textbf{VGG-A}: plain baseline model.
-    \item \textbf{VGG-A + BN}: BN inserted after each convolution and before
-    hidden ReLU activations in the classifier.
-    \item \textbf{VGG-A + Dropout}: Dropout inserted in the classifier.
+    \item 5,000/1,000 的训练/测试子集用于主线方案比较，例如 BN 行为和优化器选择；
+    \item 3,000/1,000 的更轻量训练/测试子集用于结构、激活函数与 loss/regularization 的快速对比。
+\end{itemize}
+最终结论统一以全量 CIFAR-10 训练结果为准。
+
+\subsection{模型结构}
+我们在 \texttt{codes/VGG\_BatchNorm/models/vgg.py} 中实现了三种 VGG 风格模型：
+\begin{itemize}
+    \item \textbf{VGG-A}：基础模型；
+    \item \textbf{VGG-A + BN}：在每个卷积层后加入 BN，并在分类器隐藏层激活前加入 BN；
+    \item \textbf{VGG-A + Dropout}：在分类器部分加入 Dropout。
 \end{itemize}
 
-All models contain convolutional layers, max-pooling layers, ReLU activations,
-and fully-connected layers, which satisfies the basic network requirements of
-the assignment.
-
-\subsection{Training Pipeline}
-All experiments are implemented in PyTorch. The main training and analysis
-script is \texttt{codes/VGG\_BatchNorm/VGG\_Loss\_Landscape.py}. We extend the
-original skeleton code into a reusable runner that supports:
+以上模型都包含卷积层、最大池化层、ReLU 类激活函数和全连接层，并构成了本文后续比较实验的统一基础。为了进一步分析模型容量与非线性设计对训练表现的影响，我们将 VGG-A 扩展成了可配置版本，支持修改：
 \begin{itemize}
-    \item model and optimizer comparison,
-    \item automatic saving of training curves and metrics,
-    \item loss-landscape and gradient diagnostics,
-    \item resumable checkpoints for long experiments.
+    \item 卷积通道宽度倍率（width multiplier）；
+    \item 分类器隐藏层维度；
+    \item 激活函数种类（ReLU、LeakyReLU、ELU）。
 \end{itemize}
 
-To cover the required optimization strategy, we compare SGD, SGD with momentum,
-and Adam \cite{kingma2014adam}. The main subset experiments are run for 5 to 12
-epochs, while the final full-data training is run for 40 epochs.
+\subsection{训练流程}
+所有实验均基于 PyTorch 实现，主训练与分析脚本为 \texttt{codes/VGG\_BatchNorm/VGG\_Loss\_Landscape.py}。我们将原始骨架代码扩展为一个可复用的实验运行器，支持：
+\begin{itemize}
+    \item 模型与优化器对比；
+    \item 自动保存训练曲线与指标；
+    \item loss landscape 与梯度诊断；
+    \item 长时间实验的断点续跑；
+    \item 可配置的激活函数、模型宽度、隐藏层维度、loss 类型与正则化强度。
+\end{itemize}
 
-\section{Results for CIFAR-10 Classification}
-\subsection{Subset-Scale Search Results}
-We first run small-scale experiments on 5,000 training images and 1,000 test
-images to verify the code and choose promising settings. Table
-\ref{tab:subset-results} summarizes representative results.
+在优化策略方面，我们比较了 SGD、带 momentum 的 SGD 以及 Adam。其中，最终全量训练采用 Adam、学习率 $10^{-4}$、batch size 128、40 个 epoch；而快速比较阶段的对比实验统一采用 Adam、学习率 $10^{-4}$、3,000/1,000 的子集和 6 个 epoch，以保证实验之间可公平对比。
+
+\section{CIFAR-10 分类结果}
+\subsection{小规模探索实验结果}
+我们首先在 5,000 张训练图像和 1,000 张测试图像组成的小规模划分上进行实验，用于验证代码正确性并快速比较不同训练配置。表 \ref{tab:subset-results} 总结了其中具有代表性的结果。
 
 \begin{table}[H]
 \centering
-\caption{Representative subset-scale results on 5,000/1,000 CIFAR-10 split.}
+\caption{CIFAR-10 小规模划分（5,000/1,000）上的代表性结果。}
 \label{tab:subset-results}
 \begin{tabular}{llll}
 \toprule
-Model & Optimizer & Learning rate & Best accuracy \\
+模型 & 优化器 & 学习率 & 最佳精度 \\
 \midrule
 VGG-A & Adam & $10^{-4}$ & 49.40\% \\
 VGG-A + BN & Adam & $10^{-4}$ & 53.60\% \\
@@ -120,148 +94,187 @@ VGG-A + Dropout & Adam & $10^{-4}$ & 11.20\% \\
 \end{tabular}
 \end{table}
 
-These results already show two important trends. First, optimizer choice matters
-substantially: Adam and SGD with momentum are both clearly stronger than plain
-SGD. Second, BN improves optimization behavior in the exploratory stage. The
-best subset run of VGG-A with BN reaches 53.6\%, outperforming the best plain
-VGG-A subset run at 49.4\%.
+这些结果体现出两个重要趋势。第一，优化器的选择影响很大，Adam 与带 momentum 的 SGD 都明显优于普通 SGD。第二，在这组小规模实验中，加入 BN 的 VGG-A 最佳精度达到 53.6\%，高于普通 VGG-A 的 49.4\%。Dropout 模型在当前测试的学习率范围内表现较差，这也说明额外结构并不会自动带来更高精度。
 
-The Dropout model performs poorly across the tested learning rates and remains
-close to random-guess performance. This negative result is still informative: an
-extra regularization component does not automatically improve optimization or
-accuracy.
-
-\subsection{Final Full-Data Results}
-After the exploratory stage, we run full-data experiments on the complete
-CIFAR-10 training set and evaluate on the complete test set. Our main final
-comparison uses Adam with learning rate $10^{-4}$ for 40 epochs.
+\subsection{全量数据最终结果}
+在完成探索阶段后，我们在完整的 CIFAR-10 训练集上进行正式训练，并在完整测试集上评估。最终的主对比实验采用 Adam 优化器、学习率 $10^{-4}$，训练 40 个 epoch。
 
 \begin{table}[H]
 \centering
-\caption{Final full-data results on CIFAR-10.}
+\caption{CIFAR-10 全量数据上的最终结果。}
 \label{tab:full-results}
-\begin{tabular}{llll}
+\begin{tabular}{lllll}
 \toprule
-Model & Best test accuracy & Best epoch & Final epoch accuracy \\
+模型 & 最佳测试精度 & 最佳 test error & 最佳 epoch & 最终 epoch 精度 \\
 \midrule
-VGG-A & 76.83\% & 31 & 74.47\% \\
-VGG-A + BN & 74.60\% & 30 & 72.82\% \\
+VGG-A & 76.83\% & 23.17\% & 31 & 74.47\% \\
+VGG-A + BN & 74.60\% & 25.40\% & 30 & 72.82\% \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-Figure \ref{fig:full-curves} shows the corresponding training curves. In the
-final full-data configuration, plain VGG-A achieves the strongest final
-classification result among the tested settings.
+图 \ref{fig:full-curves} 给出了对应的训练曲线。在最终的全量训练配置下，普通 VGG-A 在已测试设置中取得了最好的最终分类结果。
 
 \begin{figure}[H]
 \centering
 \includegraphics[width=0.48\textwidth]{figures/vgg_a_adam_lr0.0001_trainall_valall_ep40_curves.png}
 \includegraphics[width=0.48\textwidth]{figures/vgg_a_bn_adam_lr0.0001_trainall_valall_ep40_curves.png}
-\caption{Full-data training curves for VGG-A (left) and VGG-A + BN (right).}
+\caption{全量数据训练曲线：左图为 VGG-A，右图为 VGG-A + BN。}
 \label{fig:full-curves}
 \end{figure}
 
-\section{VGG-A with and without Batch Normalization}
-To analyze BN more directly, we compare VGG-A and VGG-A + BN under the same
-backbone design. The BN version is implemented by inserting
-\texttt{BatchNorm2d} after every convolution and \texttt{BatchNorm1d} before the
-hidden classifier activations. This keeps the structure close to the baseline
-and makes the comparison interpretable.
+\section{VGG-A 与 VGG-A + BN 的比较}
+为了更直接地分析 BN 的作用，我们在相同骨干结构下比较了 VGG-A 与 VGG-A + BN。BN 版本通过在每个卷积层后加入 \texttt{BatchNorm2d}，并在分类器隐藏层激活前加入 \texttt{BatchNorm1d} 来实现。这样可以尽量保持网络结构与基线模型接近，使对比更加直观。
 
-The comparison leads to a nuanced conclusion:
+这组比较得到的结论：
 \begin{itemize}
-    \item In the subset-scale experiments, BN provides a clear optimization
-    advantage and is more robust to learning-rate changes.
-    \item In the final full-data 40-epoch experiment with Adam and learning
-    rate $10^{-4}$, the plain VGG-A model slightly outperforms the BN variant in
-    final test accuracy.
+    \item 在小规模探索实验中，BN 版本取得了更高的测试子集精度，并且对学习率变化更稳健；
+    \item 在最终的全量 40 epoch、Adam、学习率 $10^{-4}$ 这一设置下，普通 VGG-A 的最终测试精度略高于 BN 版本。
 \end{itemize}
 
-Therefore, BN is not universally better in every configuration. Instead, our
-results suggest that BN is particularly helpful during the early-stage tuning
-process and in stability-sensitive settings, while the best final classification
-accuracy still depends on the full training recipe.
+因此，从本次实验结果来看，BN 不是更优方案。它在小规模探索阶段曾带来一定收益，但在最终全量训练中没有超过普通 VGG-A。
 
-\section{How Does BN Help Optimization?}
-Following the project requirement and the analysis in
-\cite{bn-paper,ioffe2015batch}, we study BN through loss-landscape and gradient
-diagnostics. The main idea is that if BN smooths the optimization landscape,
-then training should become less sensitive to step size and gradient changes
-should become more predictable.
+\section{BN 对优化过程的影响}
+我们通过 loss landscape 和梯度诊断来研究 BN 的作用。
 
-\subsection{Loss-Landscape Comparison}
-We train several subset-scale runs with different learning rates
-($10^{-3}, 2 \times 10^{-3}, 5 \times 10^{-4}, 10^{-4}$) and track a probe loss
-across epochs. For each epoch, we take the minimum and maximum loss among these
-runs and visualize the envelope.
+\subsection{Loss Landscape 对比}
+我们在小规模实验中使用不同学习率
+($10^{-3}, 2 \times 10^{-3}, 5 \times 10^{-4}, 10^{-4}$) 进行多组训练，并跟踪每个 epoch 的探针 loss。对于每个 epoch，我们取这些实验中的最小和最大 loss，并将其包络区域可视化。
 
 \begin{figure}[H]
 \centering
 \includegraphics[width=0.72\textwidth]{figures/loss_landscape_comparison.png}
-\caption{Loss-landscape envelope comparison between VGG-A and VGG-A + BN.}
+\caption{VGG-A 与 VGG-A + BN 的 loss landscape 包络对比。}
 \label{fig:loss-landscape}
 \end{figure}
 
-Figure \ref{fig:loss-landscape} shows that the BN model occupies a more stable
-region in the subset experiments. This is consistent with the intuition that BN
-reparameterizes the problem into a smoother landscape and reduces sensitivity to
-step size.
+图 \ref{fig:loss-landscape} 表明，在这组小规模实验中，BN 模型对应的 loss 包络区域整体更集中。就这组可视化结果而言，BN 版本对不同学习率的响应范围更小一些。
 
-\subsection{Gradient Diagnostics}
-We also track the probe gradient norm and the gradient difference between
-consecutive epochs.
+\subsection{梯度诊断}
+我们还跟踪了探针梯度范数，以及相邻 epoch 之间的梯度差异。
 
 \begin{figure}[H]
 \centering
 \includegraphics[width=0.72\textwidth]{figures/gradient_diagnostics.png}
-\caption{Gradient norm and gradient-difference diagnostics for VGG-A and VGG-A + BN.}
+\caption{VGG-A 与 VGG-A + BN 的梯度范数和梯度差异诊断图。}
 \label{fig:gradient}
 \end{figure}
 
-Figure \ref{fig:gradient} indicates that, during the small-scale search stage,
-the BN model usually changes more smoothly across training than the non-BN
-model. Thus, even though the final full-data accuracy winner is plain VGG-A in
-our best tested configuration, the optimization diagnostics still support the
-claim that BN improves training stability.
+图 \ref{fig:gradient} 表明，在这组小规模实验中，BN 模型的梯度范数整体更大，相邻 epoch 之间的梯度差异也更明显。就这张图本身来看，加入 BN 并没有表现出更小的波动，反而训练过程中的变化更明显。
 
-\section{Discussion}
-This project leads to three main observations.
+\section{结构、激活与 Loss/Regularization 分析}
+为了进一步分析网络设计选择对训练表现的影响，我们在统一的小规模设置上做了三组对比实验。它们可以看作第二级比较：在主线方案已经确定优化器与基础训练设置之后，再系统比较结构、激活函数和损失设计。除特别说明外，这些实验都基于普通 VGG-A、Adam、学习率 $10^{-4}$、训练集 3,000 张、测试集子集 1,000 张、batch size 128 和 6 个 epoch。
 
-\paragraph{Optimizer choice matters.}
-Adam and SGD with momentum are both much stronger than plain SGD in our setup.
-This effect is especially visible for the BN model.
+\subsection{不同 filters/neurons}
+我们通过调整卷积通道宽度倍率和分类器隐藏层维度来比较不同容量的模型。结果如表 \ref{tab:structure-ablation} 所示。
 
-\paragraph{BN is useful for optimization.}
-During the exploratory stage, BN improves stability and often yields better
-subset accuracy. It is also more robust to learning-rate changes in the tested
-range.
+\begin{table}[H]
+\centering
+\caption{不同 filters/neurons 设置的比较。}
+\label{tab:structure-ablation}
+\begin{tabular}{llll}
+\toprule
+宽度倍率 & 隐藏层维度 & 最佳测试子集精度 & 参数量趋势 \\
+\midrule
+0.5$\times$ & 256 & 32.8\% & 明显更小 \\
+1.0$\times$ & 512 & 33.0\% & 基线 \\
+1.25$\times$ & 640 & 31.0\% & 更大 \\
+\bottomrule
+\end{tabular}
+\end{table}
 
-\paragraph{Better optimization behavior does not always imply the best final
-accuracy.}
-Our final full-data run shows that plain VGG-A can still slightly outperform the
-BN variant in classification accuracy under a fixed recipe. Therefore, the role
-of BN should be understood as an optimization tool whose benefit depends on the
-overall configuration.
+这组实验说明，模型容量并不是越大越好。在当前训练轮数和数据规模下，过窄模型会受到容量限制，而更宽的 1.25$\times$ 版本反而更难在短训练内优化，基线宽度取得了最稳妥的结果。
 
-For future improvement, the most promising directions are stronger data
-augmentation, a learning-rate schedule, and longer BN-specific tuning. These
-changes may improve both models and could also change the final ranking between
-plain VGG-A and VGG-A + BN.
+\subsection{不同激活函数}
+我们在相同结构下比较了 ReLU、LeakyReLU 与 ELU。结果如表 \ref{tab:activation-ablation} 所示。
 
-\section{Reproducibility Notes}
-The main source files used in this report are:
+\begin{table}[H]
+\centering
+\caption{不同激活函数的比较。}
+\label{tab:activation-ablation}
+\begin{tabular}{lll}
+\toprule
+激活函数 & 最佳测试子集精度 & 备注 \\
+\midrule
+ReLU & 33.0\% & 基线设置 \\
+LeakyReLU & 34.3\% & 略优于 ReLU \\
+ELU & 44.7\% & 本组最佳 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+结果显示，激活函数的选择对训练初期的收敛速度和最终精度影响明显。ELU 在这组实验中取得了最高的测试子集精度，说明更平滑的非线性在当前数据规模与训练预算下可能更有利于优化。
+
+\subsection{不同 loss/regularization}
+这一组实验同时覆盖了不同 loss 形式和不同 regularization 强度。我们比较了普通交叉熵、带不同 weight decay 的交叉熵、带 label smoothing 的交叉熵，以及 Focal Loss。结果如表 \ref{tab:loss-ablation} 所示。
+
+\begin{table}[H]
+\centering
+\caption{不同 loss/regularization 设置的比较。}
+\label{tab:loss-ablation}
+\begin{tabular}{lll}
+\toprule
+设置 & 最佳测试子集精度 & 说明 \\
+\midrule
+CrossEntropy + wd=0 & 32.5\% & 无显式权重衰减 \\
+CrossEntropy + wd=$5\times10^{-4}$ & 33.0\% & 基线正则化 \\
+CrossEntropy + wd=$10^{-3}$ & 31.8\% & 正则化偏强 \\
+CrossEntropy + label smoothing 0.1 & 33.1\% & 略优于基线 \\
+Focal Loss + wd=$5\times10^{-4}$ & 34.6\% & 本组最佳 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+这组结果表明，适中的正则化对当前模型是有帮助的，但过强的 weight decay 会损害性能；与此同时，替换 loss 形式也确实会改变训练结果。Focal Loss 与 label smoothing 在这组小规模实验中都略好于普通交叉熵，说明当前模型可能存在一定的难例学习与概率校准空间。
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.98\textwidth]{figures/requirement_ablations.png}
+\caption{扩展分析实验的汇总：左为不同 filters/neurons，中为不同激活函数，右为不同 loss/regularization。}
+\label{fig:requirement-ablations}
+\end{figure}
+
+\subsection{候选配置的全量验证}
+为了判断小规模实验中表现较好的配置能否真正提升最终成绩，我们从第二级比较结果中挑选了两个最值得尝试的配置，继续进行全量 40 epoch 训练：
 \begin{itemize}
-    \item \texttt{codes/VGG\_BatchNorm/models/vgg.py}
-    \item \texttt{codes/VGG\_BatchNorm/VGG\_Loss\_Landscape.py}
+    \item \textbf{VGG-A + ELU + Adam}：来自激活函数实验中的最优配置；
+    \item \textbf{VGG-A + Focal Loss + Adam}：来自 loss/regularization 实验中的最优配置。
 \end{itemize}
 
-The experiment runner supports resumable checkpoints and automatically
-distinguishes runs by model, optimizer, learning rate, training subset size,
-validation subset size, and epoch count. This makes it easier to reproduce both
-exploratory and final full-data experiments.
+结果如表 \ref{tab:full-follow-up} 所示。
 
-\bibliographystyle{plain}
-\bibliography{bib}
+\begin{table}[H]
+\centering
+\caption{候选配置的全量验证结果。}
+\label{tab:full-follow-up}
+\begin{tabular}{llll}
+\toprule
+配置 & 最佳测试精度 & 最佳 test error & 最佳 epoch \\
+\midrule
+VGG-A + ReLU + CrossEntropy & 76.83\% & 23.17\% & 31 \\
+VGG-A + ELU + CrossEntropy & 76.33\% & 23.67\% & 28 \\
+VGG-A + ReLU + Focal Loss & 75.33\% & 24.67\% & 22 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+虽然 ELU 和 Focal Loss 在小规模实验中都优于基线，但在完整 CIFAR-10 上它们都没有超过原始的 VGG-A + ReLU + CrossEntropy 配置。ELU 的全量结果与基线非常接近，只低 0.50 个百分点；Focal Loss 在小规模上收益明显，但在全量训练中没有转化为更高的最终测试精度。这说明前面的两级小规模实验更适合用于快速比较方向，而最终最优配置仍然需要通过全量训练确认。
+
+\section{讨论与结论}
+本项目可以总结出以下几点。
+
+\paragraph{1. 优化器选择非常重要。}
+在主线实验中，Adam 和带 momentum 的 SGD 都显著强于普通 SGD，这一点在 BN 模型上尤其明显。
+
+\paragraph{2. BN 在本次实验中没有带来更好的最终结果。}
+在小规模探索阶段，BN 一度表现出更高的测试子集精度；但在最终全量训练中，VGG-A + BN 的最好测试精度只有 74.60\%，低于普通 VGG-A 的 76.83\%。因此，就这组作业实验而言，加入 BN 没有带来更好的最终性能。
+
+\paragraph{3. 结构、激活与 loss 选择都会显著影响结果。}
+实验结果表明，模型宽度并不是越大越好；ELU 在短程子集训练中明显优于 ReLU；Focal Loss 和 label smoothing 也能带来一定提升。也就是说，这些设计项都会真实影响训练表现，而不是仅仅停留在结构层面的变化。
+
+\paragraph{4. 更好的优化行为不一定对应最高最终测试精度。}
+在当前最佳全量配置下，普通 VGG-A 的最终测试精度高于 BN 版本。与此同时，从小规模比较中挑出的 ELU 和 Focal Loss 也没有在全量上超越原始基线。这说明无论是 BN 还是其它设计项，小规模结果都不能直接替代全量验证；最终配置必须结合完整训练结果来判断。
+
+未来最值得继续尝试的方向包括：更强的数据增强、更合理的学习率调度，以及针对 BN 版本进行更长时间的专项调参。这些改进有望同时提升两类模型的效果，也可能改变普通 VGG-A 与 VGG-A + BN 之间的最终排名。
 
 \end{document}

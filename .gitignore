@@ -20,6 +20,8 @@ codes/VGG_BatchNorm/outputs/
 model_weights_for_upload/
 EXPERIMENT_NOTES.md
 project_2_2026_compiled.pdf
+project_2_2026.lyx
+pic/
 
 # Build artifacts
 *.aux
@@ -31,3 +33,6 @@ project_2_2026_compiled.pdf
 *.out
 *.synctex.gz
 *.toc
+
+# Report sources no longer used
+report_tex/bib.bib
